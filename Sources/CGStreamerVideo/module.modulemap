@@ -1,0 +1,4 @@
+module CGStreamerVideo [system] {
+    header "shim.h"
+    export *
+}

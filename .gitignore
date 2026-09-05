@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+dist/
+test-output/

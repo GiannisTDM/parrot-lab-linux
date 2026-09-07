@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback Sumo, including GTK keyboard input on a private virtual display."""
+"""Loopback Sumo, including Qt keyboard input on a private virtual display."""
 import argparse
 import ctypes
 import importlib.util
@@ -134,7 +134,10 @@ class Keyboard:
             for i in range(count.value):
                 name = ctypes.c_char_p()
                 if self.x.XFetchName(self.display, children[i], ctypes.byref(name)) and name.value:
-                    if b"Parrot Lab" in name.value: self.window = children[i]
+                    # Qt also creates a hidden selection-owner window named after
+                    # the application. Focus only the actual visible main window.
+                    if name.value in ("Parrot Lab · Linux".encode(), "Parrot Lab · Linux".encode("latin-1")):
+                        self.window = children[i]
                     self.x.XFree(name)
             if children: self.x.XFree(children)
             if self.window: break
@@ -157,6 +160,23 @@ class Keyboard:
     def close(self):
         self.x.XDestroyWindow(self.display, self.other)
         self.x.XCloseDisplay(self.display)
+    def close_window(self):
+        class Data(ctypes.Union):
+            _fields_ = [("b", ctypes.c_char * 20), ("s", ctypes.c_short * 10), ("l", ctypes.c_long * 5)]
+        class ClientMessage(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int), ("data", Data)]
+        class Event(ctypes.Union):
+            _fields_ = [("client", ClientMessage), ("padding", ctypes.c_long * 24)]
+        self.x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        self.x.XInternAtom.restype = ctypes.c_ulong
+        self.x.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.POINTER(Event)]
+        event = Event(); event.client.type = 33; event.client.display = self.display
+        event.client.window = self.window; event.client.format = 32
+        event.client.message_type = self.x.XInternAtom(self.display, b"WM_PROTOCOLS", 0)
+        event.client.data.l[0] = self.x.XInternAtom(self.display, b"WM_DELETE_WINDOW", 0)
+        self.x.XSendEvent(self.display, self.window, 0, 0, ctypes.byref(event)); self.x.XFlush(self.display)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -164,11 +184,12 @@ def main():
     parser.add_argument("--desktop", action="store_true")
     parser.add_argument("--no-video-ack", action="store_true")
     parser.add_argument("--sc2-controls", action="store_true")
+    parser.add_argument("--window-close", action="store_true")
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
     if args.desktop and not os.environ.get("DISPLAY"):
         os.execvp("xvfb-run", ["xvfb-run", "-a", "-s", "-screen 0 1440x1000x24", "env",
-                  "GSK_RENDERER=cairo", "GDK_BACKEND=x11", "GTK_A11Y=none", sys.executable, *sys.argv])
+                  "QT_QPA_PLATFORM=xcb", "QT_STYLE_OVERRIDE=Fusion", sys.executable, *sys.argv])
     if args.sc2_controls:
         assert args.desktop, "--sc2-controls requires --desktop"
         test_sc2_controls(args.binary)
@@ -185,6 +206,7 @@ def main():
         screenshot = args.output or directory / "ground.png"
         command = [str(args.binary.resolve()), "--ground", "--host", "127.0.0.1", "--connect", "--video",
                    "--discovery-port", str(sumo.discovery.getsockname()[1]), "--archive", str(archive),
+                   "--media-dir", str(directory),
                    "--duration", "12" if args.desktop else "3"]
         command += ["--screenshot", str(screenshot)] if args.desktop else ["--headless"]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -202,6 +224,15 @@ def main():
                 keyboard.key(ord('w'), True); time.sleep(0.4)
                 assert any(c[1] == 30 for c in sumo.commands), "Forward input not sent"
                 keyboard.key(ord('w'), False); time.sleep(0.35); recent_neutral()
+                # Save the actual decoded image through the visible Qt button,
+                # not a screenshot or a direct call to the bridge.
+                keyboard.mouse(670, 115, True); time.sleep(0.04)
+                keyboard.mouse(670, 115, False); time.sleep(0.2)
+                snapshots = [p for p in directory.glob("*.png") if p != screenshot]
+                assert len(snapshots) == 1, "Save PNG button did not create a frame capture"
+                dimensions = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height", "-of", "csv=p=0", str(snapshots[0])], text=True).strip()
+                assert dimensions == "640,480", dimensions
                 keyboard.mouse(260, 175, True); time.sleep(0.35)
                 assert sumo.commands[-1][1] == 30, "On-screen forward hold did not drive"
                 keyboard.mouse(10, 10, False); time.sleep(0.35); recent_neutral()
@@ -220,9 +251,12 @@ def main():
                 keyboard.key(ord('w'), False)
                 keyboard.tap(0xffc3); keyboard.key(ord('w'), True); time.sleep(0.3)
                 assert sumo.commands[-1][1] == 30
-                process.terminate() # clean shutdown must send neutral
+                # Exercise both normal window closing and signal-driven shutdown.
+                if args.window_close: keyboard.close_window()
+                else: process.terminate()
                 keyboard.key(ord('w'), False); keyboard.close()
-            output, error = process.communicate(timeout=16)
+            # Window close must actually exit, not merely wait for --duration.
+            output, error = process.communicate(timeout=2 if args.window_close else 16)
             print(output)
             assert process.returncode == 0, error
             time.sleep(0.1)
@@ -244,7 +278,7 @@ def main():
                 subprocess.run(["ffmpeg", "-v", "error", "-f", "mjpeg", "-i", str(archive), "-f", "null", "-"], check=True)
             assert not sumo.errors, sumo.errors
             print("PASS: Sumo discovery, telemetry, MJPEG, video ACK negotiation, archive, neutral shutdown" +
-                  (", keyboard/mouse drive, release/stop/focus-loss/stale-link, GTK capture" if args.desktop else ", no headless motion"))
+                  (", keyboard/mouse drive, release/stop/focus-loss/stale-link, Qt desktop/frame PNG capture" if args.desktop else ", no headless motion"))
         finally:
             if process.poll() is None: process.terminate(); process.communicate(timeout=5)
             sumo.close()

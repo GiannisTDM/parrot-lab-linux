@@ -15,7 +15,7 @@ spec.loader.exec_module(ground)
 def main():
     if not os.environ.get("DISPLAY"):
         os.execvp("xvfb-run", ["xvfb-run", "-a", "-s", "-screen 0 1440x1000x24", "env",
-            "GSK_RENDERER=cairo", "GDK_BACKEND=x11", "GTK_A11Y=none", sys.executable, *sys.argv])
+            "QT_QPA_PLATFORM=xcb", "QT_STYLE_OVERRIDE=Fusion", sys.executable, *sys.argv])
     process = subprocess.Popen([str(pathlib.Path(sys.argv[1]).resolve()), "--duration", "10"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     keyboard = None
@@ -35,10 +35,25 @@ def main():
             finally: x.XDestroyImage(sample)
         time.sleep(0.7)
         assert background() == 0x0b1116, hex(background())
-        for expected in [0x180f09, 0x180f09, 0x0b1116]:
+        for index, expected in enumerate([0x180f09, 0x180f09, 0x0b1116]):
             keyboard.mouse(760, 117, True); time.sleep(0.05)
-            keyboard.mouse(760, 117, False); time.sleep(0.7)
+            keyboard.mouse(760, 117, False)
+            if index == 0:
+                samples = []
+                for _ in range(8):
+                    time.sleep(0.02); samples.append(background())
+                if os.environ.get("PARROTLAB_REDUCE_MOTION") == "1":
+                    assert samples[-1] == 0x180f09, "Reduced-motion theme did not settle immediately"
+                else:
+                    assert any(c not in (0x0b1116, 0x180f09) for c in samples), "Theme did not animate"
+            time.sleep(0.7)
             assert background() == expected, f"Expected {expected:06x}, got {background():06x}"
+        # F7 uses the same mode action, even during an unfinished transition.
+        keyboard.tap(0xffc4); time.sleep(0.5)
+        assert background() == 0x180f09, "F7 did not enter ground mode"
+        for _ in range(2): keyboard.tap(0xffc4)
+        time.sleep(0.5)
+        assert background() == 0x0b1116, "Rapid mode toggles left the wrong theme"
         process.terminate()
         output, error = process.communicate(timeout=5)
         assert process.returncode == 0, error

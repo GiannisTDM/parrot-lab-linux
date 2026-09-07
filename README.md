@@ -1,6 +1,6 @@
 # Parrot Lab for Ubuntu
 
-An initial native **Swift + GTK4 + GStreamer** Linux port for Ubuntu **26.04 LTS**.
+An experimental native **Swift + Qt 6 Widgets + GStreamer** Linux port for Ubuntu **26.04 LTS**.
 It is a separate Swift package, built from the current macOS app's protocol code.
 
 ## Included
@@ -36,9 +36,17 @@ From this directory:
 ```
 
 The dependency script installs Ubuntu's `swiftlang` package (the programming
-language, not the unrelated OpenStack `swift` package), GTK4, GStreamer and FFmpeg.
+language, not the unrelated OpenStack `swift` package), Qt 6, GStreamer and FFmpeg.
 Swift 6.0 or newer is required; Swift language mode 5 matches the macOS package.
 There are no remotely fetched Swift package dependencies.
+
+Version 0.3 replaces the GTK4 interface with Qt 6 Widgets. Swift still owns the
+protocols, telemetry, ground-control safeguards and recording; a C++17 bridge
+provides the Qt desktop through the same C interface. No GTK development or runtime
+package is required by the app. Ubuntu's Qt X11 and Wayland plugins are installed
+by the dependency script; the interface uses Qt's Fusion style and the air/ground
+palette. Qt libraries are dynamically linked from Ubuntu packages, not bundled.
+Set `PARROTLAB_REDUCE_MOTION=1` to make theme changes immediate instead of animated.
 
 An optional per-user desktop installation is available:
 
@@ -51,7 +59,7 @@ This places the executable in `~/.local/bin` and the launcher under
 PATH. The Ubuntu runtime packages must remain installed.
 
 For a system-wide Ubuntu package, run `./scripts/package-deb.sh`, then install
-the resulting `.deb` with `sudo apt install ./dist/parrot-lab_0.2.0-1_*.deb`.
+the resulting `.deb` with `sudo apt install ./dist/parrot-lab_0.3.0-1_*.deb`.
 Packages are architecture-specific: the provided initial build is **ARM64**, not
 Intel/AMD x86-64. Build from source on an x86-64 Ubuntu machine for that architecture.
 See [VALIDATION.md](VALIDATION.md) for the exact tested environment and limitations.
@@ -79,7 +87,7 @@ correction are not exposed in this version.
 
 ## Jumping Sumo ground mode
 
-Join the Sumo's Wi-Fi first, then cycle **Mode** to **Sumo Wi-Fi**, or launch:
+Join the Sumo's Wi-Fi first, then cycle **Mode** (or **F7**) to **Sumo Wi-Fi**, or launch:
 
 ```sh
 parrot-lab --ground --connect --video
@@ -181,11 +189,11 @@ require `libxtst6` (normally present on an Ubuntu desktop).
 For an automated demo screenshot:
 
 ```sh
-xvfb-run -a env GSK_RENDERER=cairo .build/release/parrot-lab --demo --duration 4 --screenshot /tmp/parrot-lab-demo.png
+xvfb-run -a env QT_QPA_PLATFORM=xcb .build/release/parrot-lab --demo --duration 4 --screenshot /tmp/parrot-lab-demo.png
 ```
 
 The portable executable and POSIX transport can also be built on macOS with
-`swift build`. GTK/GStreamer compile only on Linux; macOS runs the terminal and
+`swift build`. Qt/GStreamer compile only on Linux; macOS runs the terminal and
 smoke-test modes. A Mac toolchain without XCTest cannot run `swift test`.
 
 See [PORTING.md](PORTING.md) for source provenance, design boundaries and remaining work.

@@ -1,12 +1,12 @@
 Package: parrot-lab
-Version: 0.2.0-1
+Version: 0.3.0-1
 Section: video
 Priority: optional
 Architecture: @ARCH@
 Maintainer: Parrot Lab contributors
-Depends: libc6 (>= 2.43), libswiftlang (>= 6.1.3), libgtk-4-1 (>= 4.12), libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
+Depends: libc6 (>= 2.43), libstdc++6, libswiftlang (>= 6.1.3), libqt6core6t64 (>= 6.10), libqt6gui6 (>= 6.10), libqt6widgets6 (>= 6.10), qt6-qpa-plugins, qt6-wayland, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
 Recommends: ffmpeg
 Description: Experimental Bebop and Jumping Sumo telemetry and video desktop
- Native Swift, GTK4 and GStreamer bench application for Ubuntu 26.04.
+ Native Swift, Qt 6 Widgets and GStreamer bench application for Ubuntu 26.04.
  Includes telemetry, H.264/MJPEG preview, basic Sumo driving and raw recording.
  This initial Linux port does not include flight controls or device installers.

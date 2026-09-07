@@ -2,7 +2,7 @@
 """Local SC2 emulator: split TCP replies, Telnet IAC, ARNetwork ACK/pong and RTP.
 
 No real controller is contacted. Supply the compiled binary as the first arg.
-With --desktop, also verify GTK/GStreamer decode and screenshot under Xvfb.
+With --desktop, also verify Qt/GStreamer decode and screenshot under Xvfb.
 """
 import argparse
 import contextlib
@@ -208,7 +208,7 @@ def main():
         if args.ground_sc2: command += ["--ground-sc2"]
         if args.desktop:
             command = ["xvfb-run", "-a", "-s", "-screen 0 1280x900x24",
-                       "env", "GSK_RENDERER=cairo", "GDK_BACKEND=x11"] + command + ["--screenshot", str(screenshot)]
+                       "env", "QT_QPA_PLATFORM=xcb", "QT_STYLE_OVERRIDE=Fusion"] + command + ["--screenshot", str(screenshot)]
         else:
             command += ["--headless"]
         try:
@@ -236,7 +236,7 @@ def main():
             content = archive.read_bytes()
             assert content == expected * (len(content) // len(expected)), "Archive changed NAL bytes"
         print(f"PASS: discovery, Telnet, state requests, {controller.acks} ACKs, {controller.pongs} pongs, RTP, archive" +
-              (", GTK screenshot and H.264 decode" if args.desktop else ""))
+              (", Qt screenshot and H.264 decode" if args.desktop else ""))
 
 
 if __name__ == "__main__":

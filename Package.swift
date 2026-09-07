@@ -5,14 +5,15 @@ var targets: [Target] = []
 var bridgeDependencies: [Target.Dependency] = []
 #if os(Linux)
 targets += [
-    .systemLibrary(name: "CGtk", pkgConfig: "gtk4", providers: [.apt(["libgtk-4-dev"])]),
+    .systemLibrary(name: "CQt6", pkgConfig: "Qt6Widgets", providers: [.apt(["qt6-base-dev"])]),
     .systemLibrary(name: "CGStreamer", pkgConfig: "gstreamer-app-1.0", providers: [.apt(["libgstreamer-plugins-base1.0-dev"])]),
     .systemLibrary(name: "CGStreamerVideo", pkgConfig: "gstreamer-video-1.0")
 ]
-bridgeDependencies = ["CGtk", "CGStreamer", "CGStreamerVideo"]
+bridgeDependencies = ["CQt6", "CGStreamer", "CGStreamerVideo"]
 #endif
 targets += [
     .target(name: "CLinuxBridge", dependencies: bridgeDependencies,
+            cxxSettings: [.define("QT_NO_KEYWORDS")],
             linkerSettings: [.linkedLibrary("m")]),
     .executableTarget(name: "ParrotLabLinux", dependencies: ["CLinuxBridge"],
                       swiftSettings: [.swiftLanguageMode(.v5)],
@@ -25,4 +26,5 @@ targets += [
     .testTarget(name: "ParrotLabLinuxTests", dependencies: ["ParrotLabLinux"])
 ]
 let package = Package(name: "ParrotLabLinux", platforms: [.macOS(.v13)],
-    products: [.executable(name: "parrot-lab", targets: ["ParrotLabLinux"])], targets: targets)
+    products: [.executable(name: "parrot-lab", targets: ["ParrotLabLinux"])], targets: targets,
+    cxxLanguageStandard: .cxx17)

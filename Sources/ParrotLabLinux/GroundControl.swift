@@ -14,7 +14,7 @@ enum LabMode: Int32 {
 }
 
 /// A renewable input lease, not a latched throttle. The network worker checks
-/// the lease independently of GTK so a stalled UI cannot keep driving.
+/// the lease independently of Qt so a stalled UI cannot keep driving.
 final class GroundControl {
     private let lock = NSLock()
     private var armed = false, available = false
@@ -37,7 +37,7 @@ final class GroundControl {
     func input(now: Double = ProcessInfo.processInfo.systemUptime) -> JumpingSumoPilotingInput {
         locked {
             guard available, armed, now - refreshed <= 0.25 else {
-                // An expired lease requires explicit re-arming, even after GTK resumes.
+                // An expired lease requires explicit re-arming, even after Qt resumes.
                 if armed, refreshed.isFinite { armed = false; held = 0 }
                 return JumpingSumoPilotingInput(speed: 0, turn: 0)
             }

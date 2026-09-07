@@ -1,4 +1,4 @@
-module CGtk [system] {
+module CQt6 [system] {
     header "shim.h"
     export *
 }

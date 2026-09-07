@@ -199,7 +199,7 @@ func run() throws -> Int32 {
         }
         timer.resume(); dispatchMain()
     }
-    guard pl_desktop_available() != 0 else { throw LabError.message("The GTK desktop builds on Linux. Use --headless or --self-test on macOS.") }
+    guard pl_desktop_available() != 0 else { throw LabError.message("The Qt desktop builds on Linux. Use --headless or --self-test on macOS.") }
     let controller = DesktopController(options)
     let pointer = Unmanaged.passUnretained(controller).toOpaque()
     let code = pl_desktop_run(pointer, { context, action, host in

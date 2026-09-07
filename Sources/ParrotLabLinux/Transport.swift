@@ -119,7 +119,11 @@ enum Transport {
         } catch { if !token.isCancelled { log("Telnet: \(error.localizedDescription)") } }
     }
 
-    static func discovery(host: String, port: UInt16, udp: Socket, token: Cancellation) throws -> UInt16 {
+    struct Discovery {
+        let port: UInt16
+        let video: ARStream1Negotiation
+    }
+    static func discovery(host: String, port: UInt16, udp: Socket, token: Cancellation) throws -> Discovery {
         let tcp = try Socket.tcp(host, port)
         let body: [String: Any] = ["controller_name": "Parrot Lab Linux", "controller_type": "computer",
                                   "d2c_port": Int(udp.port), "qos_mode": 0]
@@ -136,17 +140,21 @@ enum Transport {
                 guard let value = object["c2d_port"] as? Int, let port = UInt16(exactly: value), port > 0 else {
                     throw LabError.message("Discovery reply has no valid command port")
                 }
-                return port
+                return Discovery(port: port, video: ARSDKDiscoveryProtocol.arstream1Negotiation(from: object))
             }
         }
         throw LabError.message("ARDiscovery timed out or returned incomplete JSON")
     }
 
     static func arsdk(host: String, port: UInt16, token: Cancellation,
+                      mode: LabMode = .air, ground: GroundControl? = nil,
+                      videoRequested: @escaping () -> Bool = { false },
+                      jpeg: @escaping (Data) -> Void = { _ in },
                       event: @escaping (ARSDKTelemetryEvent) -> Void, log: @escaping (String) -> Void) {
         do {
             let udp = try Socket.udp()
-            let remotePort = try discovery(host: host, port: port, udp: udp, token: token)
+            let discovery = try discovery(host: host, port: port, udp: udp, token: token)
+            let remotePort = discovery.port
             guard !token.isCancelled else { return }
             try udp.peer(host, remotePort)
             log("ARSDK connected · command UDP \(remotePort) · telemetry UDP \(udp.port)")
@@ -159,12 +167,46 @@ enum Transport {
                 if type == 4 { pending[seq] = (packet, ProcessInfo.processInfo.systemUptime, 0) }
             }
             try send(type: 4, id: 11, payload: ARSDKPhotoCommand.requestAllStates)
-            try send(type: 4, id: 11, payload: ARSDKPhotoCommand.requestSkyControllerAllStates)
+            if mode != .sumoDirect {
+                try send(type: 4, id: 11, payload: ARSDKPhotoCommand.requestSkyControllerAllStates)
+            }
+            var assembler = ARStream1VideoAssembler()
+            assembler.configure(fragmentSize: min(32768, discovery.video.fragmentSize ?? 32768),
+                                maximumFragments: discovery.video.fragmentMaximumNumber)
+            var sumoConfirmed = mode == .sumoDirect
+            var videoEnabled = false, lastDrive = -Double.infinity
+            var driveAuthority = false, everArmed = false, neutralRemaining = 0
+            var lastTelemetry = -Double.infinity
+            defer {
+                ground?.setAvailable(false)
+                if everArmed {
+                    // Best effort only: a broken radio cannot guarantee delivery.
+                    for _ in 0..<3 { try? send(type: 2, id: 10, payload: ARSDKPhotoCommand.jumpingSumoPCMD(flag: false, speed: 0, turn: 0)) }
+                }
+                if videoEnabled { try? send(type: 4, id: 11, payload: ARSDKPhotoCommand.jumpingSumoVideoEnable(false)) }
+            }
             var lastReceived: [UInt8: UInt8] = [:]
             var lastData = ProcessInfo.processInfo.systemUptime
             while !token.isCancelled {
                 let now = ProcessInfo.processInfo.systemUptime
                 if now - lastData > 10 { throw LabError.message("ARSDK telemetry timed out; reconnect to retry") }
+                if mode.ground, now - lastDrive >= 0.05 {
+                    lastDrive = now
+                    ground?.setAvailable(sumoConfirmed && now - lastTelemetry <= 1)
+                    let input = ground?.input() ?? JumpingSumoPilotingInput(speed: 0, turn: 0)
+                    let armed = ground?.status.armed ?? false
+                    if driveAuthority && !armed { neutralRemaining = 3 }
+                    driveAuthority = armed; everArmed = everArmed || armed
+                    if armed || neutralRemaining > 0 {
+                        try send(type: 2, id: 10, payload: ARSDKPhotoCommand.jumpingSumoPCMD(flag: input.flag, speed: input.speed, turn: input.turn))
+                        if !armed { neutralRemaining -= 1 }
+                    }
+                }
+                if mode == .sumoDirect, videoRequested() != videoEnabled {
+                    videoEnabled = videoRequested(); assembler.reset()
+                    try send(type: 4, id: 11, payload: ARSDKPhotoCommand.jumpingSumoVideoEnable(videoEnabled))
+                    log(videoEnabled ? "Sumo MJPEG video enabled" : "Sumo video stopped")
+                }
                 if let data = try udp.receive(), !data.isEmpty {
                     lastData = now
                     for frame in ARNetworkFrame.decode(data) {
@@ -173,10 +215,28 @@ enum Transport {
                         }
                         if frame.type == 4 { try send(type: 1, id: frame.id &+ 128, payload: Data([frame.sequence])) }
                         if frame.type == 2, frame.id == 0 { try send(type: 2, id: 1, payload: frame.payload) }
+                        if mode == .sumoDirect, frame.id == 125, videoEnabled,
+                           let result = assembler.consume(frame.payload) {
+                            if discovery.video.sendsVideoAcknowledgements {
+                                try send(type: 2, id: 13, payload: result.acknowledgement)
+                            }
+                            if let completed = result.frame,
+                               let image = ARStream1VideoAssembler.jpegPayload(in: completed.payload), image.count <= 4 * 1024 * 1024 {
+                                jpeg(image)
+                            }
+                            continue
+                        }
                         guard frame.id == 126 || frame.id == 127 else { continue }
                         if lastReceived[frame.id] == frame.sequence { continue }
                         lastReceived[frame.id] = frame.sequence
-                        if let telemetry = ARSDKTelemetryProtocol.decode(frame.payload) { event(telemetry) }
+                        if let telemetry = ARSDKTelemetryProtocol.decode(frame.payload) {
+                            lastTelemetry = now
+                            if case .aircraftConnection(let status, _, let productID) = telemetry, mode == .sumoSC2 {
+                                sumoConfirmed = status == 2 && productID == 0x0902
+                                if !sumoConfirmed { ground?.setAvailable(false) }
+                            }
+                            event(telemetry)
+                        }
                     }
                 }
                 for key in Array(pending.keys) {

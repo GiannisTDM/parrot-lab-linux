@@ -2,3 +2,4 @@
 .swiftpm/
 dist/
 test-output/
+__pycache__/

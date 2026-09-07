@@ -7,6 +7,8 @@ import Darwin
 #endif
 
 struct LabOptions {
+    var mode = LabMode.air
+    var speedLimit = 30
     var host = "192.168.42.88"
     var telnetPort: UInt16 = 23
     var discoveryPort: UInt16 = 44444
@@ -35,6 +37,11 @@ struct LabOptions {
         while index < args.count {
             let option = args[index]
             switch option {
+            case "--ground": result.mode = .sumoDirect
+            case "--ground-sc2": result.mode = .sumoSC2
+            case "--speed-limit":
+                guard let value = Int(try next(option)), (0...100).contains(value) else { throw LabError.message("Speed limit must be 0–100") }
+                result.speedLimit = value
             case "--host": result.host = try next(option)
             case "--telnet-port": result.telnetPort = try port(next(option))
             case "--discovery-port": result.discoveryPort = try port(next(option))
@@ -59,6 +66,9 @@ struct LabOptions {
             index += 1
         }
         guard pl_ipv4_valid(result.host) == 1 else { throw LabError.message("Host must be an IPv4 address") }
+        if !args.contains("--host") { result.host = result.mode.host }
+        if args.contains("--ground") && args.contains("--ground-sc2") { throw LabError.message("Choose one ground connection route") }
+        if result.mode == .sumoDirect && result.listenOnly { throw LabError.message("Direct Sumo video uses ARDiscovery, not an RTP listener") }
         if result.demo && (result.connect || result.video || result.archive != nil) {
             throw LabError.message("Demo cannot be combined with a connection, RTP listener, or archive")
         }
@@ -132,8 +142,16 @@ final class LabSession {
     private(set) var demo = false
     private var fatalVideoError: String?
     private var finalArchiveError: String?
+    private let groundWorker = DispatchGroup()
+    private var jpegStart = 0.0, jpegWindow = 0.0, jpegBytes = 0, jpegFrames = 0
+    let groundControl = GroundControl()
+    private(set) var mode: LabMode
     let options: LabOptions
-    init(options: LabOptions) { self.options = options }
+    init(options: LabOptions) {
+        self.options = options; mode = options.mode; groundControl.setLimit(options.speedLimit)
+    }
+    func setMode(_ mode: LabMode) { disconnect(); self.mode = mode }
+    var archiveExtension: String { mode == .sumoDirect ? "mjpeg" : "h264" }
     private func locked<T>(_ body: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try body() }
     var connected: Bool { locked { connectionToken != nil } }
     var videoRunning: Bool { locked { videoToken != nil } }
@@ -145,10 +163,11 @@ final class LabSession {
     func connect(host: String) throws {
         guard pl_ipv4_valid(host) == 1 else { throw LabError.message("Enter a valid IPv4 address") }
         disconnect()
+        let mode = self.mode
         let token = Cancellation()
         locked {
             demo = false; snapshot = TelemetrySnapshot(); parser.reset(); reducer.reset(); updated = nil
-            connectionToken = token; connectionWorkers = 2; snapshot.connectionLabel = "Connecting to \(host)"
+            connectionToken = token; connectionWorkers = mode == .sumoDirect ? 1 : 2; snapshot.connectionLabel = "Connecting to \(host)"
         }
         let updateLine: (String) -> Void = { [weak self] line in
             self?.locked {
@@ -165,12 +184,17 @@ final class LabSession {
         let logger: (String) -> Void = { [weak self] message in
             self?.locked { if !token.isCancelled { self?.log(message) } }
         }
-        DispatchQueue(label: "parrotlab.linux.telnet").async {
+        if mode != .sumoDirect { DispatchQueue(label: "parrotlab.linux.telnet").async {
             Transport.telnet(host: host, port: self.options.telnetPort, token: token, onLine: updateLine, log: logger)
             self.connectionWorkerFinished(token)
-        }
+        } }
+        groundWorker.enter()
         DispatchQueue(label: "parrotlab.linux.arsdk").async {
-            Transport.arsdk(host: host, port: self.options.discoveryPort, token: token, event: updateEvent, log: logger)
+            defer { self.groundWorker.leave() }
+            Transport.arsdk(host: host, port: self.options.discoveryPort, token: token,
+                mode: mode, ground: mode.ground ? self.groundControl : nil,
+                videoRequested: { self.locked { self.connectionToken === token && self.videoToken != nil } },
+                jpeg: { image in self.receiveJPEG(image, token: token) }, event: updateEvent, log: logger)
             self.connectionWorkerFinished(token)
         }
     }
@@ -180,13 +204,16 @@ final class LabSession {
             connectionWorkers -= 1
             if connectionWorkers == 0 {
                 connectionToken = nil; updated = nil; snapshot = TelemetrySnapshot()
+                if mode == .sumoDirect, videoToken != nil { fatalVideoError = "Sumo connection ended; reconnect to restart video" }
                 log("Telemetry disconnected; Connect to retry")
             }
         }
     }
     func disconnect() {
+        groundControl.setAvailable(false)
         locked { connectionToken?.cancel(); connectionToken = nil; demo = false; updated = nil; snapshot = TelemetrySnapshot() }
         stopVideo()
+        if mode.ground { _ = groundWorker.wait(timeout: .now() + .milliseconds(800)) }
     }
     func startDemo() {
         disconnect()
@@ -207,6 +234,15 @@ final class LabSession {
     func startVideo(host: String) throws {
         guard pl_ipv4_valid(host) == 1 else { throw LabError.message("Enter a valid IPv4 address") }
         stopVideo()
+        if mode == .sumoDirect {
+            if !connected { try connect(host: host) }
+            locked {
+                demo = false; videoToken = Cancellation(); fatalVideoError = nil; stats = RTPVideoStats()
+                jpegStart = ProcessInfo.processInfo.systemUptime; jpegWindow = jpegStart; jpegBytes = 0; jpegFrames = 0
+            }
+            log("Sumo video will arrive over the direct ARNetwork connection")
+            return
+        }
         // Open first: some controllers begin transmitting immediately after GET /video.
         let initialSocket = try Socket.udp(options.videoPort)
         let token = Cancellation()
@@ -277,8 +313,27 @@ final class LabSession {
         }
     }
     func stopVideo() {
+        groundControl.stop()
         locked { videoToken?.cancel(); videoToken = nil; frames.removeAll(); frameBytes = 0; fatalVideoError = nil }
         stopArchive()
+    }
+    private func receiveJPEG(_ image: Data, token: Cancellation) {
+        locked {
+            guard connectionToken === token, !token.isCancelled, videoToken != nil else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            archive?.append(image)
+            if !options.headless {
+                // JPEG frames are independent: retain only the latest complete image.
+                frames = [EncodedFrame(bytes: image, pts: UInt64(max(0, now - jpegStart) * 1_000_000_000))]
+                frameBytes = image.count
+            }
+            jpegBytes += image.count; jpegFrames += 1; stats.packets += 1
+            if now - jpegWindow >= 1 {
+                stats.bitrateKbps = Int(Double(jpegBytes) * 8 / 1000 / (now - jpegWindow))
+                stats.encodedAUFPS = Double(jpegFrames) / (now - jpegWindow)
+                jpegWindow = now; jpegBytes = 0; jpegFrames = 0
+            }
+        }
     }
     func drainFrames() -> [EncodedFrame] { locked { defer { frames.removeAll(keepingCapacity: true); frameBytes = 0 }; return frames } }
     func startArchive(path: String) throws {
@@ -286,7 +341,7 @@ final class LabSession {
         guard !recording else { throw LabError.message("An archive is already recording") }
         let recorder = try RawArchive(path: path)
         locked { archive = recorder; finalArchiveError = nil }
-        log("Archiving original H.264 to \(path)")
+        log("Archiving original \(archiveExtension.uppercased()) to \(path)")
     }
     func stopArchive() {
         let recorder = locked { let value = archive; archive = nil; return value }
@@ -310,6 +365,32 @@ final class LabSession {
                 age! > 3 ? "STALE TELEMETRY · \(Int(age!)) seconds since last update" : "Connected · receiving telemetry"
             func integer(_ value: Int?, suffix: String = "") -> String { value.map { "\($0)\(suffix)" } ?? "—" }
             func number(_ value: Double?, suffix: String = "") -> String { value.map { String(format: "%.1f", $0) + suffix } ?? "—" }
+            if mode.ground {
+                let control = groundControl.status, input = groundControl.input()
+                let body = """
+                GROUND · JUMPING SUMO
+                \(demo ? "DEMO" : !control.ready ? "WAITING FOR SUMO LINK" : control.armed ? "DRIVE ARMED" : "DRIVE DISARMED")
+                Speed limit   \(control.limit)%
+                Command       \(input.speed) / \(input.turn)
+
+                BATTERY
+                Sumo          \(integer(snapshot.droneBatteryPercent, suffix: "%"))
+                Controller    \(integer(snapshot.sc2BatteryPercent, suffix: "%"))
+
+                LINK
+                RSSI          \(integer(snapshot.reportedRSSI ?? snapshot.chain0RSSI, suffix: " dBm"))
+                Quality       \(integer(snapshot.rxQuality, suffix: "%"))
+
+                VIDEO · \(archiveExtension.uppercased())
+                \(stats.bitrateKbps) kbps
+                \(String(format: "%.1f", stats.encodedAUFPS)) frames/s
+                \(mode == .sumoDirect ? "\(stats.packets) JPEG frames" : "\(stats.packets) packets · \(stats.packetsLost) lost")
+
+                Hold WASD / arrows
+                Space / Esc = stop
+                """
+                return ("\(mode.title) · \(status)", body, logs.suffix(4).joined(separator: "\n"), .nan, .nan)
+            }
             let body = """
             FLIGHT
             \(snapshot.flightState)

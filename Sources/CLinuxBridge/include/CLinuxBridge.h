@@ -27,3 +27,5 @@ int pl_video_snapshot(const char *path);
 int pl_desktop_available(void);
 int pl_desktop_capture(const char *path);
 int pl_desktop_capture_status(void); // 0 idle, 1 pending, 2 saved, -1 failed
+void pl_desktop_mode(int mode, const char *host);
+void pl_ground_update(int armed, int ready, int limit);

@@ -2,6 +2,50 @@ import XCTest
 @testable import ParrotLabLinux
 
 final class ProtocolTests: XCTestCase {
+    func testGroundInputLeaseAndDisarming() {
+        let control = GroundControl()
+        XCTAssertFalse(control.toggleArm())
+        control.setAvailable(true)
+        XCTAssertTrue(control.toggleArm())
+        control.refresh(mask: 1 | 8, now: 10)
+        XCTAssertEqual(control.input(now: 10.1), JumpingSumoPilotingInput(speed: 30, turn: 30))
+        control.setLimit(15)
+        XCTAssertEqual(control.input(now: 10.2).speed, 15)
+        XCTAssertFalse(control.input(now: 10.3).flag)
+        XCTAssertFalse(control.status.armed)
+        control.refresh(mask: 1, now: 11)
+        XCTAssertFalse(control.input(now: 11).flag) // no automatic re-arm
+        XCTAssertTrue(control.toggleArm())
+        control.refresh(mask: 1 | 2 | 4 | 8, now: 12)
+        XCTAssertFalse(control.input(now: 12).flag)
+        control.setAvailable(false)
+        XCTAssertFalse(control.status.armed)
+        control.setAvailable(true)
+        XCTAssertFalse(control.status.armed)
+        XCTAssertEqual(ARSDKPhotoCommand.jumpingSumoPCMD(flag: true, speed: -30, turn: 30), Data([3, 0, 0, 0, 1, 226, 30]))
+    }
+    func testGroundOptions() throws {
+        XCTAssertEqual(try LabOptions.parse(["--ground"]).host, "192.168.2.1")
+        XCTAssertEqual(try LabOptions.parse(["--ground-sc2"]).host, "192.168.42.88")
+        XCTAssertEqual(try LabOptions.parse(["--ground", "--host", "127.0.0.1"]).host, "127.0.0.1")
+        XCTAssertThrowsError(try LabOptions.parse(["--ground", "--listen"]))
+        XCTAssertThrowsError(try LabOptions.parse(["--ground", "--ground-sc2"]))
+        XCTAssertThrowsError(try LabOptions.parse(["--speed-limit", "101"]))
+    }
+    func testSumoJPEGAssemblyAndACK() {
+        var assembler = ARStream1VideoAssembler()
+        assembler.configure(fragmentSize: 1000, maximumFragments: 128)
+        let jpeg = Data([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9])
+        let a = assembler.consume(Data([255, 255, 0, 0, 2]) + jpeg.prefix(3))
+        XCTAssertNil(a?.frame)
+        XCTAssertEqual(a?.acknowledgement.count, 18)
+        let b = assembler.consume(Data([255, 255, 0, 1, 2]) + jpeg.dropFirst(3))
+        XCTAssertEqual(b?.frame?.payload, jpeg)
+        XCTAssertEqual(ARStream1VideoAssembler.jpegPayload(in: jpeg), jpeg)
+        XCTAssertNil(ARStream1VideoAssembler.jpegPayload(in: jpeg.dropLast()))
+        XCTAssertEqual(assembler.consume(Data([0, 0, 0, 0, 1]) + jpeg)?.frame?.frameNumber, 65536)
+        XCTAssertNil(assembler.consume(Data([1, 0, 0, 0, 129]) + jpeg))
+    }
     func testTelemetryAndMetadataFromMacCore() {
         XCTAssertTrue(ARSDKTelemetryReducer.selfTest())
         XCTAssertTrue(VideoMetadataV2.selfTest())

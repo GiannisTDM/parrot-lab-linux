@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Parrot Lab
-Comment=SkyController telemetry and Bebop 2 video
+Comment=Bebop video, Jumping Sumo ground controls and telemetry
 Exec=parrot-lab
 Icon=camera-video
 Terminal=false

@@ -46,7 +46,8 @@ def access_units(nals):
 
 
 class Controller:
-    def __init__(self, units):
+    def __init__(self, units, ground=False):
+        self.ground = ground
         self.telnet, self.discovery, self.restream = [tcp_server() for _ in range(3)]
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind(("127.0.0.1", 0))
@@ -127,6 +128,9 @@ class Controller:
                 seq = (seq + 1) % 256
                 self.udp.sendto(frame(4, 126, seq, bytes([0, 5, 1, 0, 74])) +
                                 frame(2, 0, seq, b"pingtest"), self.client)
+                if self.ground:
+                    self.udp.sendto(frame(2, 127, seq, bytes([4, 3, 1, 0]) +
+                        struct.pack("<I", 2) + b"Sumo\0" + struct.pack("<H", 0x0902)), self.client)
             try:
                 data, peer = self.udp.recvfrom(65536)
             except socket.timeout:
@@ -179,6 +183,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=pathlib.Path)
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--ground-sc2", action="store_true")
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
     binary = str(args.binary.resolve())
@@ -191,7 +196,7 @@ def main():
             units = access_units(split_nals((directory / "source.h264").read_bytes()))
         else:
             units = [[b"\x65\x01\x02\x03"]]
-        controller = Controller(units)
+        controller = Controller(units, ground=args.ground_sc2)
         controller.start()
         archive = directory / "capture.h264"
         screenshot = args.output or directory / "desktop.png"
@@ -200,6 +205,7 @@ def main():
             "--discovery-port", str(controller.discovery.getsockname()[1]),
             "--restream-port", str(controller.restream.getsockname()[1]),
             "--video-port", str(controller.video_port), "--archive", str(archive)]
+        if args.ground_sc2: command += ["--ground-sc2"]
         if args.desktop:
             command = ["xvfb-run", "-a", "-s", "-screen 0 1280x900x24",
                        "env", "GSK_RENDERER=cairo", "GDK_BACKEND=x11"] + command + ["--screenshot", str(screenshot)]
@@ -225,7 +231,7 @@ def main():
             assert match and int(match[1]) >= 30, "Video did not decode/present"
             subprocess.run(["ffmpeg", "-v", "error", "-i", str(archive), "-f", "null", "-"], check=True)
         else:
-            assert "74%" in result.stdout and "21.5 m" in result.stdout, "Telemetry was not reduced"
+            assert "74%" in result.stdout and ("GROUND" in result.stdout if args.ground_sc2 else "21.5 m" in result.stdout), "Telemetry was not reduced"
             expected = b"\0\0\0\1\x65\1\2\3"
             content = archive.read_bytes()
             assert content == expected * (len(content) // len(expected)), "Archive changed NAL bytes"

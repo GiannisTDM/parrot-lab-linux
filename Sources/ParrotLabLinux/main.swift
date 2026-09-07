@@ -7,7 +7,7 @@ import Darwin
 #endif
 
 let help = """
-Parrot Lab Linux — basic telemetry and H.264 desktop preview
+Parrot Lab Linux — telemetry, video preview and basic Sumo ground driving
 
   parrot-lab                              Open the desktop, disconnected
   parrot-lab --demo                       Show simulated telemetry/test video
@@ -17,8 +17,11 @@ Parrot Lab Linux — basic telemetry and H.264 desktop preview
 
 Options:
   --host IP              SC2 IPv4 address (default 192.168.42.88)
+  --ground               Direct Jumping Sumo Wi-Fi (default 192.168.2.1)
+  --ground-sc2           Sumo through SC2; existing H.264 restream route
+  --speed-limit PERCENT  Ground drive cap, 0–100 (default 30)
   --connect              Connect telemetry at startup
-  --video                Request the SC2 H.264 /video restream
+  --video                Start SC2 H.264 or direct Sumo MJPEG video
   --listen               Receive RTP only; skip restream negotiation
   --video-port PORT       Local RTP port (default 55004)
   --telnet-port PORT      Telnet port (default 23)
@@ -27,14 +30,17 @@ Options:
   --demo                 Local simulation; no network connection
   --headless             Print telemetry in the terminal
   --duration SECONDS     Stop automatically (0.1–86400)
-  --archive PATH         Archive original H.264; refuses existing files
+  --archive PATH         Archive H.264 or direct Sumo MJPEG; refuses existing files
   --media-dir PATH       Where desktop PNGs and archives are saved
   --screenshot PATH      Save the desktop after two seconds (requires display)
   --self-test            Run protocol smoke tests without a display or drone
   --help                 Show this help
 
-This first version provides telemetry, video, PNG capture and raw H.264 archives.
+Includes telemetry, video, PNG capture and original H.264/MJPEG archives.
 Flight controls, device installers and advanced image processing are not included.
+Ground mode: arm explicitly (button/F6), then hold WASD/arrows or direction buttons.
+Release stops motion; Space/Esc, focus loss, stale telemetry or disconnect disarms.
+No jump actions. Headless mode never arms or drives.
 """
 
 final class DesktopController {
@@ -55,7 +61,7 @@ final class DesktopController {
             case 2:
                 if video { stopVideo() }
                 else {
-                    guard pl_video_start(0) != 0 else { throw LabError.message(String(cString: pl_video_error())) }
+                    guard pl_video_start(session.mode == .sumoDirect ? 2 : 0) != 0 else { throw LabError.message(String(cString: pl_video_error())) }
                     do { try session.startVideo(host: host); video = true }
                     catch { pl_video_stop(); throw error }
                 }
@@ -65,11 +71,23 @@ final class DesktopController {
                 video = true
             case 4:
                 if session.recording { session.stopArchive() }
-                else { try session.startArchive(path: session.mediaPath(extension: "h264")) }
+                else { try session.startArchive(path: session.mediaPath(extension: session.archiveExtension)) }
             case 5:
                 let path = try session.mediaPath(extension: "png")
                 guard pl_video_snapshot(path) != 0 else { throw LabError.message("No decoded frame available to save") }
                 session.log("PNG saved: \(path)")
+            case 6:
+                stopVideo()
+                let next = LabMode(rawValue: (session.mode.rawValue + 1) % 3)!
+                session.setMode(next); pl_desktop_mode(next.rawValue, next.host)
+            case 10:
+                guard session.mode.ground, !session.demo else { return }
+                let armed = session.groundControl.toggleArm()
+                session.log(armed ? "Ground drive armed · hold a direction to move" : "Ground drive disarmed")
+            case 11: session.groundControl.stop()
+            case 12: if let limit = Int(host) { session.groundControl.setLimit(limit) }
+            case 30:
+                if session.mode.ground { session.groundControl.refresh(mask: Int(host) ?? 0) }
             default: break
             }
         } catch { session.log(error.localizedDescription); failed = true }
@@ -78,6 +96,7 @@ final class DesktopController {
     func tick() {
         if !started {
             started = true
+            pl_desktop_mode(session.mode.rawValue, options.host)
             if options.demo { action(3, host: options.host) }
             else {
                 if options.connect { action(1, host: options.host) }
@@ -104,6 +123,8 @@ final class DesktopController {
             let status = view.status + "  ·  \(pl_video_frames()) displayed frames"
             pl_desktop_update(status, view.telemetry, view.log, view.roll, view.pitch,
                               session.connected ? 1 : 0, video ? 1 : 0, session.recording ? 1 : 0)
+            let control = session.groundControl.status
+            pl_ground_update(control.armed ? 1 : 0, control.ready && !session.demo ? 1 : 0, Int32(control.limit))
         }
         if !captureRequested, elapsed >= 2, let path = options.screenshot {
             captureRequested = true

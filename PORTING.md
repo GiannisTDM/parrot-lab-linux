@@ -45,11 +45,32 @@ f6a04139d84837990eea29004a0251e5201ce4202edfdbdca2cc44123b80684b
   normal close or SIGINT/SIGTERM in terminal mode.
 - Unsupported Apple GPU features are omitted, not simulated as working controls.
 
+## Basic ground mode (0.2)
+
+`GroundControl.swift` owns a locked, explicit arm state, held-input lease and speed
+cap. The ARSDK worker sends Sumo PCMD at approximately 20 Hz only after arming,
+then a short neutral burst on disarm/shutdown. A view-only session emits no PCMD.
+SC2 requires product ID `0x0902`; direct Sumo is explicitly selected by the user.
+Both require fresh decoded telemetry (one-second timeout), which needs real-device
+cadence validation. GTK input is refreshed every 16 ms with a 250 ms lease.
+
+Direct Wi-Fi uses the existing portable ARStream1 assembler, negotiated fragment
+limits and ACK buffer 13. Only complete JPEG frames enter the preview/recording
+path. Independent JPEG previews keep the latest frame; archival retains all received
+complete JPEGs within the existing disk queue bound. GStreamer uses `jpegparse` and
+`jpegdec`. SC2 ground mode retains the H.264 restream path, not RFC 2435 JPEG RTP.
+
+GTK's window-level `ground` class switches panels, controls and accent colours for
+both ground routes, using the Mac `LabVisualStyle` palette and 380 ms CSS colour
+transitions. The Linux background uses the Mac gradient's middle colour as a flat
+fill. Switching back removes the class. Decoded video is never recoloured; desktop
+captures render the same CSS background rather than a hard-coded air colour.
+
 ## Next work
 
 1. Validate the actual SC2 restream and stock cyclic-intra-refresh H.264 on Ubuntu.
 2. Measure loss recovery, end-to-end latency, disconnect/reconnect and long recordings.
-3. Add direct ARDiscovery/product detection and legacy ARStream1/MJPEG transport.
+3. Validate real Sumo driving/MJPEG; add automatic product discovery and SC2 JPEG RTP.
 4. Extract stable protocol code into a package shared with the Mac app.
 5. Evaluate hardware decode, GPU scaling and image correction on Intel/AMD/NVIDIA.
 

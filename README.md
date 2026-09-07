@@ -15,6 +15,10 @@ It is a separate Swift package, built from the current macOS app's protocol code
 - Software H.264 decode through GStreamer/libav, bounded queues and a latest-frame display.
 - PNG capture of the displayed video frame, without the HUD.
 - Original Annex-B H.264 archiving, with a separate bounded disk queue.
+- Basic Jumping Sumo ground mode: direct Wi-Fi telemetry/MJPEG preview and capped,
+  explicitly armed hold-to-drive controls; optional SC2-routed ground controls.
+- Blue air-mode styling fades to warm brown/amber for either ground route, matching
+  the Mac palette. Video pixels and saved video frames are never tinted.
 - Terminal mode, offline protocol tests and a local simulated-controller integration test.
 
 This is an initial desktop/bench version. Live hardware compatibility and FPV latency
@@ -47,7 +51,7 @@ This places the executable in `~/.local/bin` and the launcher under
 PATH. The Ubuntu runtime packages must remain installed.
 
 For a system-wide Ubuntu package, run `./scripts/package-deb.sh`, then install
-the resulting `.deb` with `sudo apt install ./dist/parrot-lab_0.1.0-1_*.deb`.
+the resulting `.deb` with `sudo apt install ./dist/parrot-lab_0.2.0-1_*.deb`.
 Packages are architecture-specific: the provided initial build is **ARM64**, not
 Intel/AMD x86-64. Build from source on an x86-64 Ubuntu machine for that architecture.
 See [VALIDATION.md](VALIDATION.md) for the exact tested environment and limitations.
@@ -68,10 +72,57 @@ The Apple-private NCM driver installer from the macOS app is not used by this po
 The legacy controller protocols are unencrypted; use a trusted, isolated controller
 network rather than exposing these ports to the Internet.
 
-SC2-routed H.264/Bebop 2 is the initial supported video route. Direct-product
-discovery, ARStream1/Jumping Sumo playback, piloting controls, Dragon/RF installers,
-processed recording, MetalFX, temporal reconstruction and rolling-shutter correction
-are not exposed in this version.
+SC2-routed H.264/Bebop 2 and direct Sumo ARStream1/MJPEG are implemented video routes.
+Flight controls, jump actions, gamepads, automatic product discovery, Dragon/RF
+installers, processed recording, MetalFX, temporal reconstruction and rolling-shutter
+correction are not exposed in this version.
+
+## Jumping Sumo ground mode
+
+Join the Sumo's Wi-Fi first, then cycle **Mode** to **Sumo Wi-Fi**, or launch:
+
+```sh
+parrot-lab --ground --connect --video
+```
+
+The direct route defaults to `192.168.2.1` (override with `--host`). It uses
+ARDiscovery/ARNetwork, fragment acknowledgements and GStreamer JPEG decoding,
+without Telnet or SC2 restream negotiation. **Archive MJPEG** saves the original
+concatenated JPEG frames. PNG capture works as in air mode. Use `--ground --demo`
+to preview the brown interface without connecting; demo cannot arm the wheels.
+
+For a Sumo already bridged through an SC2, use **Sumo SC2** or:
+
+```sh
+parrot-lab --ground-sc2 --host 192.168.42.88 --connect --video
+```
+
+SC2 driving is gated on the controller reporting a connected Jumping Sumo product.
+This route currently supports only an existing **H.264** SC2 restream; stock JPEG
+RTP restreaming through SC2 is not implemented. Direct Sumo JPEG commands are never
+sent to an SC2. Neither route installs or changes device firmware.
+
+Driving requires **Arm drive** / **F6**, then holding **WASD**, **arrow keys** or the
+on-screen direction buttons. Speed/turn are capped at **30%** by default; change
+the slider or launch with `--speed-limit 20`. Release sends neutral. Space, Escape,
+STOP, focus loss, editing the host/speed, stopping video, switching mode or
+disconnecting disarms. A 250 ms input-refresh timeout or one second without decoded
+telemetry also disarms; reconnecting does not automatically re-arm. Headless mode
+never sends drive commands. Closing normally or with SIGINT/SIGTERM sends best-effort
+neutral packets before closing the connection.
+
+These are software safeguards, not a guaranteed physical stop: a failed network or
+killed process cannot deliver a stop command. Real Sumo operation and its telemetry
+cadence still need validation. First test with the wheels safely raised, at a low cap.
+
+MJPEG archives contain no timestamps. For example, convert a known 20 FPS capture
+to H.264 MP4 (choose the actual capture rate):
+
+```sh
+ffmpeg -f mjpeg -framerate 20 -i capture.mjpeg -c:v libx264 -pix_fmt yuv420p capture.mp4
+```
+
+## Recording and standalone RTP
 
 For an already configured RTP sender, skip negotiation:
 
@@ -109,8 +160,10 @@ swift test -j 4
 .build/debug/parrot-lab --self-test
 python3 scripts/test-integration.py .build/debug/parrot-lab
 python3 scripts/test-errors.py .build/debug/parrot-lab
-sudo apt-get install -y xvfb xauth
+sudo apt-get install -y xvfb xauth libxtst6
 python3 scripts/test-integration.py .build/debug/parrot-lab --desktop --output /tmp/parrot-lab.png
+python3 scripts/test-ground.py .build/debug/parrot-lab --desktop --output /tmp/parrot-lab-ground.png
+python3 scripts/test-theme.py .build/debug/parrot-lab
 ```
 
 The integration test only uses `127.0.0.1`. It creates a local SC2 emulator, sends
@@ -118,6 +171,12 @@ split TCP responses and RTP video, verifies telemetry/state requests/ACKs/pongs,
 and checks archived bytes. The desktop variant generates actual H.264 with FFmpeg,
 uses a virtual X display, verifies at least 30 displayed frames, saves a screenshot,
 and decodes the saved archive again.
+
+Ground tests additionally cover MJPEG fragment reordering/wraparound and optional
+ACKs, capped keyboard/mouse drive, release/stop/focus-loss/stale-link neutral commands,
+SC2 product gating and shutdown. The theme test cycles both ground routes and back
+to air and checks the actual rendered background colours. Desktop input tests also
+require `libxtst6` (normally present on an Ubuntu desktop).
 
 For an automated demo screenshot:
 
